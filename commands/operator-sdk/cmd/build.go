@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	cmdError "github.com/operator-framework/operator-sdk/commands/operator-sdk/error"
 
@@ -48,6 +49,7 @@ const (
 	build       = "./tmp/build/build.sh"
 	dockerBuild = "./tmp/build/docker_build.sh"
 	configYaml  = "./config/config.yaml"
+	mainGo      = "./cmd/%s/main.go"
 )
 
 func buildFunc(cmd *cobra.Command, args []string) {
@@ -55,19 +57,35 @@ func buildFunc(cmd *cobra.Command, args []string) {
 		cmdError.ExitWithError(cmdError.ExitBadArgs, fmt.Errorf("build command needs exactly 1 argument"))
 	}
 
-	bcmd := exec.Command(build)
-	o, err := bcmd.CombinedOutput()
-	if err != nil {
-		cmdError.ExitWithError(cmdError.ExitError, fmt.Errorf("failed to build: (%v)", string(o)))
+	// Don't need to buld go code if Ansible Operator
+	if buildCmd() {
+		bcmd := exec.Command(build)
+		o, err := bcmd.CombinedOutput()
+		if err != nil {
+			cmdError.ExitWithError(cmdError.ExitError, fmt.Errorf("failed to build: (%v)", string(o)))
+		}
+		fmt.Fprintln(os.Stdout, string(o))
 	}
-	fmt.Fprintln(os.Stdout, string(o))
 
 	image := args[0]
 	dbcmd := exec.Command(dockerBuild)
 	dbcmd.Env = append(os.Environ(), fmt.Sprintf("IMAGE=%v", image))
-	o, err = dbcmd.CombinedOutput()
+	o, err := dbcmd.CombinedOutput()
 	if err != nil {
 		cmdError.ExitWithError(cmdError.ExitError, fmt.Errorf("failed to output build image %v: (%v)", image, string(o)))
 	}
 	fmt.Fprintln(os.Stdout, string(o))
+}
+
+func buildCmd() bool {
+	dir, err := os.Getwd()
+	if err != nil {
+		cmdError.ExitWithError(cmdError.ExitError, fmt.Errorf("failed to get current working dir: %v", err))
+	}
+	dirSplit := strings.Split(dir, "/")
+	projectName := dirSplit[len(dirSplit)-1]
+	if _, err = os.Stat(fmt.Sprintf(mainGo, projectName)); err == nil {
+		return true
+	}
+	return false
 }
