@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"math/rand"
 	"os"
 	"strconv"
@@ -58,13 +60,20 @@ type AnsibleOperatorReconciler struct {
 	EventHandlers   []events.EventHandler
 	ReconcilePeriod time.Duration
 	ManageStatus    bool
+	Scheme          *runtime.Scheme
 }
 
 // Reconcile - handle the event.
 func (r *AnsibleOperatorReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(r.GVK)
+
+	// set GVK from r which got from watches file
+
 	err := r.Client.Get(context.TODO(), request.NamespacedName, u)
+
+	// we have the resource from the GVK
+
 	if apierrors.IsNotFound(err) {
 		return reconcile.Result{}, nil
 	}
@@ -72,12 +81,17 @@ func (r *AnsibleOperatorReconciler) Reconcile(request reconcile.Request) (reconc
 		return reconcile.Result{}, err
 	}
 
+
+
+
+	// instance of logger getting created
 	ident := strconv.Itoa(rand.Int())
 	logger := logf.Log.WithName("reconciler").WithValues(
 		"job", ident,
 		"name", u.GetName(),
 		"namespace", u.GetNamespace(),
 	)
+
 
 	reconcileResult := reconcile.Result{RequeueAfter: r.ReconcilePeriod}
 	if ds, ok := u.GetAnnotations()[ReconcilePeriodAnnotation]; ok {
@@ -121,6 +135,7 @@ func (r *AnsibleOperatorReconciler) Reconcile(request reconcile.Request) (reconc
 		u.Object["spec"] = map[string]interface{}{}
 	}
 
+	// base image to mange CR or manage on your own
 	if r.ManageStatus {
 		err = r.markRunning(u, request.NamespacedName)
 		if err != nil {
@@ -129,6 +144,8 @@ func (r *AnsibleOperatorReconciler) Reconcile(request reconcile.Request) (reconc
 		}
 	}
 
+
+	// instance of owner reference in the base image.. right now
 	ownerRef := metav1.OwnerReference{
 		APIVersion: u.GetAPIVersion(),
 		Kind:       u.GetKind(),
@@ -136,12 +153,17 @@ func (r *AnsibleOperatorReconciler) Reconcile(request reconcile.Request) (reconc
 		UID:        u.GetUID(),
 	}
 
+	// create kubeconfig to give to ansible
+	// - want to handle owner references, so ansible authors do not have to worry about them
+	// - more efficient (caching all resources created)
+	//
 	kc, err := kubeconfig.Create(ownerRef, "http://localhost:8888", u.GetNamespace())
 	if err != nil {
 		r.markError(u, request.NamespacedName, "Unable to run reconciliation")
 		logger.Error(err, "Unable to generate kubeconfig")
 		return reconcileResult, err
 	}
+	// run after reconcile()
 	defer func() {
 		if err := os.Remove(kc.Name()); err != nil {
 			logger.Error(err, "Failed to remove generated kubeconfig file")
@@ -157,6 +179,15 @@ func (r *AnsibleOperatorReconciler) Reconcile(request reconcile.Request) (reconc
 	// iterate events from ansible, looking for the final one
 	statusEvent := eventapi.StatusJobEvent{}
 	failureMessages := eventapi.FailureMessages{}
+
+	// jkim skip
+	eventBroadcaster := record.NewBroadcaster()
+	//eventBroadcaster.StartLogging(klog.Infof)
+	//eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{kubeclientset.CoreV1().Events("")})
+	recorder := eventBroadcaster.NewRecorder(r.Scheme, v1.EventSource{
+		Component: u.GetName(),
+	})
+
 	for event := range result.Events() {
 		for _, eHandler := range r.EventHandlers {
 			go eHandler.Handle(ident, u, event)
@@ -171,6 +202,11 @@ func (r *AnsibleOperatorReconciler) Reconcile(request reconcile.Request) (reconc
 			if err != nil {
 				return reconcile.Result{}, err
 			}
+		}
+		if event.Event == eventapi.EventChanged {
+
+			recorder.Event(u, v1.EventTypeNormal, "testing new event", "test new event now!")
+
 		}
 		if event.Event == eventapi.EventRunnerOnFailed && !event.IgnoreError() {
 			failureMessages = append(failureMessages, event.GetFailedPlaybookMessage())

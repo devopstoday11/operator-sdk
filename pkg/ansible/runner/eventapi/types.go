@@ -41,6 +41,9 @@ const (
 
 	// defaultFailedMessage - Default failed playbook message
 	defaultFailedMessage = "unknown playbook failure"
+
+	// changed event
+	EventChanged = "blah"
 )
 
 // EventTime - time to unmarshal nano time.
